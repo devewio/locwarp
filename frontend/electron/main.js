@@ -184,21 +184,38 @@ ipcMain.handle('relaunch-app', () => {
 })
 
 ipcMain.handle('locate-pc', async () => {
-  const win = await tryWindowsLocation()
-  if (win.ok) return { ...win, via: 'windows' }
-  if (win.code === 'DENIED') return win
-  // Windows Location returned NODATA / TIMEOUT / ERROR / UNKNOWN. Fall
-  // back to IP geolocation from the main process so the request is
-  // free of any renderer CORS / CSP restrictions.
+  // The high-accuracy first layer (Windows Location API via PowerShell)
+  // only exists on Windows. On macOS / Linux there's no equivalent wired
+  // up yet, so we skip straight to the IP-geolocation fallback (city-level
+  // ~5km accuracy). The button therefore still works everywhere — it just
+  // returns a coarser fix off-Windows until a native CoreLocation path is
+  // added. See `via` in the result so the UI can label the source.
+  if (process.platform === 'win32') {
+    const win = await tryWindowsLocation()
+    if (win.ok) return { ...win, via: 'windows' }
+    if (win.code === 'DENIED') return win
+    // Windows Location returned NODATA / TIMEOUT / ERROR / UNKNOWN. Fall
+    // back to IP geolocation from the main process so the request is
+    // free of any renderer CORS / CSP restrictions.
+    const ip = await ipFallback()
+    if (ip) return ip
+    // Both layers failed — surface the original Windows error so the
+    // dialog can show the user something diagnostic instead of just
+    // "everything failed".
+    return {
+      ok: false,
+      code: 'ALL_FAILED',
+      message: `Windows Location: ${win.code}${win.message ? ' (' + win.message + ')' : ''} | IP fallback: all 3 services unreachable`,
+    }
+  }
+
+  // Non-Windows: IP geolocation only.
   const ip = await ipFallback()
   if (ip) return ip
-  // Both layers failed — surface the original Windows error so the
-  // dialog can show the user something diagnostic instead of just
-  // "everything failed".
   return {
     ok: false,
     code: 'ALL_FAILED',
-    message: `Windows Location: ${win.code}${win.message ? ' (' + win.message + ')' : ''} | IP fallback: all 3 services unreachable`,
+    message: 'IP geolocation fallback: all 3 services unreachable',
   }
 })
 

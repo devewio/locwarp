@@ -104,7 +104,10 @@ def install_frontend():
         print("已就緒 ✓")
     else:
         print("安裝中...")
-        subprocess.run(["npm", "install"], cwd=FRONTEND, shell=True)
+        # shell=True is needed on Windows so `npm`/`npx` resolve the
+        # .cmd shim; on POSIX (macOS/Linux) shell=True with a list only
+        # runs the first element, so npm would silently drop "install".
+        subprocess.run(["npm", "install"], cwd=FRONTEND, shell=(os.name == "nt"))
         print("        完成 ✓")
 
 
@@ -136,10 +139,12 @@ def start_frontend():
         time.sleep(1)
 
     # 用 --port 強制指定 port，避免 Vite 跳到其他 port
+    # shell=True only on Windows (to resolve the npx.cmd shim); on POSIX
+    # shell=True with a list drops every argument after "npx".
     p = subprocess.Popen(
         ["npx", "vite", "--host", "--port", str(FRONTEND_PORT), "--strictPort"],
         cwd=FRONTEND,
-        shell=True,
+        shell=(os.name == "nt"),
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
     )
     procs.append(p)
@@ -184,8 +189,15 @@ def main():
         print()
 
     # 檢查環境
+    # macOS / Linux (Homebrew etc.) often expose only `python3`, not a
+    # bare `python`. We already launch the backend via sys.executable, so
+    # the running interpreter is what matters — accept either name here.
     ok = True
-    ok = check_tool("python", "https://www.python.org/downloads/") and ok
+    if shutil.which("python") or shutil.which("python3"):
+        print("  [✓] 已找到 python")
+    else:
+        print("  [✗] 找不到 python，請先安裝：https://www.python.org/downloads/")
+        ok = False
     ok = check_tool("node", "https://nodejs.org/") and ok
     ok = check_tool("npm", "隨 Node.js 一起安裝") and ok
     print()
