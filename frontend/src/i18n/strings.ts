@@ -83,6 +83,13 @@ export const STRINGS = {
   'phone.copied': { zh: '已複製', en: 'Copied' },
   'phone.rotate': { zh: '重新產生', en: 'Regenerate' },
   'phone.rotated': { zh: '已重新產生 PIN / QR', en: 'PIN / QR regenerated' },
+  'phone.enable': { zh: '啟用手機操控', en: 'Enable phone control' },
+  'phone.disable': { zh: '停用手機操控', en: 'Disable phone control' },
+  'phone.enabling': { zh: '啟用中...', en: 'Enabling...' },
+  'phone.disabling': { zh: '停用中...', en: 'Disabling...' },
+  'phone.lan_enabled': { zh: '手機操控已啟用,可開放同網段裝置連線', en: 'Phone control enabled — devices on your network can now connect' },
+  'phone.lan_disabled': { zh: '手機操控已停用', en: 'Phone control disabled' },
+  'phone.lan_off_hint': { zh: '手機操控尚未啟用。基於安全,內網連線預設關閉,請按「啟用手機操控」後再用手機連線。', en: 'Phone control is off. For safety, LAN access is disabled by default — click "Enable phone control" before connecting from your phone.' },
 
   // Avatar picker panel
   'avatar.title': { zh: '地圖釘 / 使用者頭像', en: 'Map pin / User avatar' },

@@ -115,5 +115,16 @@ RECONNECT_MAX_RETRIES = 30
 DEFAULT_LOCATION = {"lat": 25.0375, "lng": 121.5637}
 
 # Server
-API_HOST = "0.0.0.0"
+# Desktop API binds to loopback only — the Electron UI talks to the
+# backend exclusively over 127.0.0.1, so there is no reason to expose
+# the full API (device control, bookmarks, websocket joystick) to the
+# LAN. Phone control opens a separate, opt-in LAN listener on
+# PHONE_LAN_PORT (see services/lan_listener.py) exposing only the
+# phone-facing routes.
+API_HOST = "127.0.0.1"
 API_PORT = 8777
+# On-demand LAN listener port for phone control. Deliberately a
+# different port from API_PORT: binding 0.0.0.0:8777 while 127.0.0.1:8777
+# is already bound is platform-dependent ("Address already in use" on
+# Linux/macOS), so the phone listener uses its own socket entirely.
+PHONE_LAN_PORT = 8778

@@ -674,6 +674,13 @@ async def lifespan(application: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
 
+    # Close the phone LAN listener if the user left it enabled.
+    try:
+        from services.lan_listener import lan_listener
+        await lan_listener.stop()
+    except Exception:
+        logger.debug("LAN listener stop on shutdown failed", exc_info=True)
+
     app_state.save_settings()
     await app_state.device_manager.disconnect_all()
     logger.info("LocWarp shut down")
@@ -683,10 +690,24 @@ async def lifespan(application: FastAPI):
 
 app = FastAPI(title="LocWarp", version="0.1.0", description="iOS Virtual Location Simulator", lifespan=lifespan)
 
+# CORS is scoped to the desktop UI's own origins only. The packaged
+# Electron app loads the renderer from file:// (which sends `Origin: null`
+# or no Origin header at all — same-origin-ish requests that CORS does not
+# gate), and the dev build runs from the Vite server. We never want a web
+# page on the LAN/internet to script the loopback API, so allow_origins is
+# an explicit allowlist with credentials disabled (the API uses no cookies
+# — the phone path authenticates with a bearer token on a separate
+# listener). The wildcard "*" + allow_credentials=True combination that
+# was here before let any origin issue credentialed requests.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "http://localhost:5173",   # Vite dev server
+        "http://127.0.0.1:5173",
+        "http://localhost:8777",   # backend-served assets (dev)
+        "http://127.0.0.1:8777",
+    ],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -700,7 +721,7 @@ from api.bookmarks import router as bookmarks_router
 from api.recent import router as recent_router
 from api.websocket import router as ws_router
 from api.system import router as system_router
-from api.phone_control import router as phone_router
+from api.phone_control import desktop_phone_router, lan_phone_router
 
 app.include_router(device_router)
 app.include_router(location_router)
@@ -710,7 +731,11 @@ app.include_router(system_router)
 app.include_router(bookmarks_router)
 app.include_router(recent_router)
 app.include_router(ws_router)
-app.include_router(phone_router)
+# Loopback app gets both: the desktop-only management routes AND the phone
+# action routes (so the desktop UI can drive the same endpoints). The LAN
+# listener (services/lan_listener.py) mounts ONLY lan_phone_router.
+app.include_router(desktop_phone_router)
+app.include_router(lan_phone_router)
 
 
 @app.get("/")
@@ -733,4 +758,11 @@ if __name__ == "__main__":
     uvicorn_access = logging.getLogger("uvicorn.access")
     uvicorn_access.setLevel(logging.INFO)
     uvicorn_access.propagate = True  # route through our basicConfig handlers
-    uvicorn.run("main:app", host=API_HOST, port=API_PORT, reload=False, access_log=True)
+    # Run the server explicitly (instead of uvicorn.run, which spins up its
+    # own loop from an import string). This guarantees the primary server
+    # and the on-demand phone LAN listener — which schedules itself with
+    # asyncio.create_task on the running loop — share the SAME event loop,
+    # so app_state / simulation_engines are touched from a single thread.
+    config = uvicorn.Config(app, host=API_HOST, port=API_PORT, access_log=True)
+    server = uvicorn.Server(config)
+    asyncio.run(server.serve())

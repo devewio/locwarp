@@ -32,7 +32,16 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("locwarp.phone")
 
-router = APIRouter(tags=["phone"])
+# Two routers split by trust boundary:
+#   * desktop_phone_router — localhost-only management endpoints (URL/PIN
+#     discovery, firewall repair, rotate, and the enable/disable toggle
+#     for the LAN listener). Mounted ONLY on the loopback app.
+#   * lan_phone_router — the phone-facing action endpoints (auth, status,
+#     teleport, navigate, …). Mounted on the loopback app AND, when the
+#     user opts in, on the separate 0.0.0.0 LAN listener. This is the only
+#     surface ever exposed to the LAN.
+desktop_phone_router = APIRouter(tags=["phone"])
+lan_phone_router = APIRouter(tags=["phone"])
 
 
 # ── Auth state ───────────────────────────────────────────────
@@ -195,6 +204,35 @@ def _firewall_add_rule(port: int) -> tuple[bool, str]:
         return False, msg or f"netsh exit code {proc.returncode}"
     except Exception as e:
         logger.exception("firewall add rule failed")
+        return False, str(e)
+
+
+def _firewall_delete_rule() -> tuple[bool, str]:
+    """Best-effort removal of the inbound Allow rule added by
+    `_firewall_add_rule`. Called when the user disables phone control so
+    the firewall doesn't keep a stale hole open for a port nothing is
+    listening on. Failure is non-fatal (logged, not surfaced) — the LAN
+    socket is already closed at that point, so a lingering Allow rule is
+    harmless. No-op on non-Windows."""
+    import platform
+    if platform.system() != "Windows":
+        return False, "Windows-only"
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "delete", "rule",
+             f"name={_RULE_NAME}", "dir=in"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=4.0,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+        )
+        if proc.returncode == 0:
+            return True, "rule deleted"
+        # netsh returns non-zero when no matching rule exists — treat as
+        # success since the end state (no rule) is what we wanted.
+        return True, (proc.stdout or proc.stderr or "no matching rule").strip()
+    except Exception as e:
+        logger.debug("firewall delete rule failed", exc_info=True)
         return False, str(e)
 
 
@@ -369,40 +407,96 @@ class _NavigateBody(BaseModel):
 # ── Pairing endpoints (localhost-only or PIN-gated) ──────────
 
 
-@router.get("/api/phone/info")
+@desktop_phone_router.get("/api/phone/info")
 async def phone_info(request: Request):
-    """Desktop-only: returns LAN IPs, port, PIN, and last-seen phone-
-    page hit timestamp so the UI can show "phone reached the URL N
-    seconds ago" and diagnose why a phone can't connect (wrong IP vs.
-    firewall blocked vs. PIN typo) without the user having to check
-    anything themselves."""
+    """Desktop-only: returns LAN IPs, the phone-listener port, PIN, and
+    last-seen phone-page hit timestamp so the UI can show "phone reached
+    the URL N seconds ago" and diagnose why a phone can't connect (wrong
+    IP vs. firewall blocked vs. PIN typo) without the user having to check
+    anything themselves.
+
+    `port` is PHONE_LAN_PORT (the on-demand LAN listener), not API_PORT —
+    the phone connects to the LAN listener, never the loopback API."""
     if not _is_localhost(request):
         raise HTTPException(status_code=403, detail="Localhost only")
-    from config import API_PORT
+    from config import PHONE_LAN_PORT
+    from services.lan_listener import lan_listener
     nics = _enumerate_nics()
     return {
-        "port": API_PORT,
+        "port": PHONE_LAN_PORT,
         "lan_ips": [n["ip"] for n in nics if n["kind"] != "virtual"],
         "nics": nics,
         "pin": _auth.pin,
+        "lan_enabled": lan_listener.is_running,
         "last_phone_hit_ago_s": _last_phone_hit_seconds_ago(),
     }
 
 
-@router.post("/api/phone/firewall_repair")
-async def phone_firewall_repair(request: Request):
-    """Desktop-only: add a Windows Firewall inbound TCP rule for API_PORT
-    so the phone can reach the LAN URL. Requires LocWarp to be running
-    elevated (the NSIS installer asks for admin, so the bundled exe
-    already has it)."""
+@desktop_phone_router.post("/api/phone/enable")
+async def phone_enable(request: Request):
+    """Desktop-only: open the on-demand LAN listener so a phone on the
+    same WiFi can reach the phone-control page. This is the explicit,
+    user-initiated act of exposing phone control to the LAN — nothing is
+    LAN-reachable until this is called. Best-effort adds a firewall rule
+    so the user doesn't have to repair it separately."""
     if not _is_localhost(request):
         raise HTTPException(status_code=403, detail="Localhost only")
-    from config import API_PORT
-    ok, msg = _firewall_add_rule(API_PORT)
+    from config import PHONE_LAN_PORT
+    from services.lan_listener import lan_listener
+    ok, msg = await lan_listener.start()
+    if not ok:
+        raise HTTPException(status_code=500, detail={"code": "lan_start_failed",
+                                                     "message": msg})
+    # Best-effort firewall hole so the phone can actually reach the port.
+    fw_ok, fw_msg = _firewall_add_rule(PHONE_LAN_PORT)
+    nics = _enumerate_nics()
+    return {
+        "ok": True,
+        "port": PHONE_LAN_PORT,
+        "lan_ips": [n["ip"] for n in nics if n["kind"] != "virtual"],
+        "firewall_ok": fw_ok,
+        "firewall_message": fw_msg,
+    }
+
+
+@desktop_phone_router.post("/api/phone/disable")
+async def phone_disable(request: Request):
+    """Desktop-only: close the LAN listener so phone control is no longer
+    reachable from the network. Best-effort removes the firewall rule so
+    no stale hole is left open for a port nothing listens on."""
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    from services.lan_listener import lan_listener
+    await lan_listener.stop()
+    fw_ok, fw_msg = _firewall_delete_rule()
+    return {"ok": True, "firewall_ok": fw_ok, "firewall_message": fw_msg}
+
+
+@desktop_phone_router.get("/api/phone/lan_status")
+async def phone_lan_status(request: Request):
+    """Desktop-only: report whether the LAN listener is currently open,
+    so the modal can render the toggle in the right state on open."""
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    from config import PHONE_LAN_PORT
+    from services.lan_listener import lan_listener
+    return {"enabled": lan_listener.is_running, "port": PHONE_LAN_PORT}
+
+
+@desktop_phone_router.post("/api/phone/firewall_repair")
+async def phone_firewall_repair(request: Request):
+    """Desktop-only: add a Windows Firewall inbound TCP rule for the phone
+    listener port so the phone can reach the LAN URL. Requires LocWarp to
+    be running elevated (the NSIS installer asks for admin, so the bundled
+    exe already has it)."""
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    from config import PHONE_LAN_PORT
+    ok, msg = _firewall_add_rule(PHONE_LAN_PORT)
     return {"ok": ok, "message": msg}
 
 
-@router.post("/api/phone/rotate")
+@desktop_phone_router.post("/api/phone/rotate")
 async def phone_rotate(request: Request):
     """Desktop-only: regenerates PIN + token, invalidating any previously
     paired phone. Use after suspecting compromise or just to refresh."""
@@ -413,7 +507,7 @@ async def phone_rotate(request: Request):
     return {"status": "ok"}
 
 
-@router.post("/api/phone/auth")
+@lan_phone_router.post("/api/phone/auth")
 async def phone_auth(req: _AuthRequest):
     """PIN-only flow: phone POSTs the PIN it sees on the desktop screen
     and gets the token back. PIN comparison is constant-time."""
@@ -473,7 +567,7 @@ async def _fanout(action_name: str, fn):
         logger.warning("phone %s: %d/%d engines failed", action_name, len(fails), len(results))
 
 
-@router.get("/api/phone/status")
+@lan_phone_router.get("/api/phone/status")
 async def phone_status(
     request: Request,
     x_locwarp_token: str | None = Header(default=None, alias="X-LocWarp-Token"),
@@ -531,7 +625,7 @@ async def phone_status(
     }
 
 
-@router.post("/api/phone/teleport")
+@lan_phone_router.post("/api/phone/teleport")
 async def phone_teleport(
     body: _TeleportBody,
     request: Request,
@@ -546,7 +640,7 @@ async def phone_teleport(
     return {"status": "ok", "lat": body.lat, "lng": body.lng}
 
 
-@router.post("/api/phone/stop")
+@lan_phone_router.post("/api/phone/stop")
 async def phone_stop(
     request: Request,
     x_locwarp_token: str | None = Header(default=None, alias="X-LocWarp-Token"),
@@ -557,7 +651,7 @@ async def phone_stop(
     return {"status": "stopped"}
 
 
-@router.post("/api/phone/restore")
+@lan_phone_router.post("/api/phone/restore")
 async def phone_restore(
     request: Request,
     x_locwarp_token: str | None = Header(default=None, alias="X-LocWarp-Token"),
@@ -568,7 +662,7 @@ async def phone_restore(
     return {"status": "restored"}
 
 
-@router.post("/api/phone/navigate")
+@lan_phone_router.post("/api/phone/navigate")
 async def phone_navigate(
     body: _NavigateBody,
     request: Request,
@@ -614,7 +708,7 @@ async def phone_navigate(
     }
 
 
-@router.get("/api/phone/geocode")
+@lan_phone_router.get("/api/phone/geocode")
 async def phone_geocode(
     request: Request,
     q: str,
@@ -671,7 +765,7 @@ def _phone_page_path() -> Path:
     return candidates[-1]
 
 
-@router.get("/phone", response_class=HTMLResponse)
+@lan_phone_router.get("/phone", response_class=HTMLResponse)
 async def phone_page(request: Request):
     """Serve the embedded mobile control page. Token is read by the
     page JS from `window.location.hash` (#t=...) so the server never
@@ -688,7 +782,7 @@ async def phone_page(request: Request):
         raise HTTPException(status_code=500, detail="phone.html missing")
 
 
-@router.get("/api/phone/_reach")
+@lan_phone_router.get("/api/phone/_reach")
 async def phone_reach_check(request: Request):
     """Unauthenticated reachability ping. Phone loads /phone, the page
     JS hits this on load, and the desktop UI polls /api/phone/info to

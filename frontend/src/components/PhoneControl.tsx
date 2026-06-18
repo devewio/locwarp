@@ -14,6 +14,7 @@ interface PhoneInfo {
   lan_ips: string[];
   nics?: PhoneNic[];
   pin: string;
+  lan_enabled?: boolean;
   last_phone_hit_ago_s?: number | null;
 }
 
@@ -30,6 +31,10 @@ const PhoneControlButton: React.FC<PhoneControlButtonProps> = ({ showToast }) =>
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [selectedIp, setSelectedIp] = useState<string | null>(null);
+  // LAN listener (phone control exposure) state. Off by default each
+  // session — the backend never persists it across restarts.
+  const [lanEnabled, setLanEnabled] = useState(false);
+  const [lanBusy, setLanBusy] = useState(false);
 
   const fetchInfo = useCallback(async () => {
     setLoading(true);
@@ -39,6 +44,7 @@ const PhoneControlButton: React.FC<PhoneControlButtonProps> = ({ showToast }) =>
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j: PhoneInfo = await r.json();
       setInfo(j);
+      if (typeof j.lan_enabled === 'boolean') setLanEnabled(j.lan_enabled);
       if (!selectedIp || !j.lan_ips.includes(selectedIp)) {
         setSelectedIp(j.lan_ips[0] ?? null);
       }
@@ -49,9 +55,49 @@ const PhoneControlButton: React.FC<PhoneControlButtonProps> = ({ showToast }) =>
     }
   }, [selectedIp]);
 
+  // On modal open, read the current LAN state first so the toggle renders
+  // in the right position, then fetch URL/PIN info.
+  const fetchLanStatus = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/phone/lan_status`);
+      if (r.ok) {
+        const j = await r.json();
+        setLanEnabled(!!j.enabled);
+      }
+    } catch { /* ignore — fetchInfo also reports lan_enabled */ }
+  }, []);
+
   useEffect(() => {
-    if (open) fetchInfo();
-  }, [open, fetchInfo]);
+    if (open) {
+      fetchLanStatus();
+      fetchInfo();
+    }
+  }, [open, fetchLanStatus, fetchInfo]);
+
+  const toggleLan = useCallback(async () => {
+    setLanBusy(true);
+    setErr(null);
+    try {
+      const path = lanEnabled ? 'disable' : 'enable';
+      const r = await fetch(`${API}/api/phone/${path}`, { method: 'POST' });
+      if (!r.ok) {
+        let detail = `HTTP ${r.status}`;
+        try {
+          const j = await r.json();
+          detail = j?.detail?.message || j?.detail || detail;
+        } catch { /* ignore */ }
+        throw new Error(detail);
+      }
+      const nowEnabled = !lanEnabled;
+      setLanEnabled(nowEnabled);
+      showToast?.(t(nowEnabled ? 'phone.lan_enabled' : 'phone.lan_disabled'));
+      await fetchInfo();
+    } catch (e: any) {
+      setErr(e?.message ?? 'failed');
+    } finally {
+      setLanBusy(false);
+    }
+  }, [lanEnabled, fetchInfo, showToast, t]);
 
   const rotate = useCallback(async () => {
     setLoading(true);
@@ -176,7 +222,47 @@ const PhoneControlButton: React.FC<PhoneControlButtonProps> = ({ showToast }) =>
 
             {info && (
               <>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 16 }}>
+                {/* Enable / disable the LAN listener. Until enabled, phone
+                    control is not reachable from the network at all. */}
+                <button
+                  onClick={toggleLan}
+                  disabled={lanBusy}
+                  style={{
+                    width: '100%', marginBottom: 14, padding: '10px 12px',
+                    fontSize: 13, fontWeight: 600,
+                    background: lanEnabled ? 'rgba(239, 93, 93, 0.12)' : 'rgba(77, 210, 138, 0.14)',
+                    border: `1px solid ${lanEnabled ? 'rgba(239, 93, 93, 0.45)' : 'rgba(77, 210, 138, 0.5)'}`,
+                    color: lanEnabled ? '#ef9999' : '#7ee2a4',
+                    borderRadius: 8, cursor: lanBusy ? 'wait' : 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  }}
+                >
+                  <span style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    background: lanEnabled ? '#4dd28a' : '#6b7280',
+                    boxShadow: lanEnabled ? '0 0 6px #4dd28a' : 'none',
+                  }} />
+                  {lanBusy
+                    ? t(lanEnabled ? 'phone.disabling' : 'phone.enabling')
+                    : t(lanEnabled ? 'phone.disable' : 'phone.enable')}
+                </button>
+
+                {!lanEnabled && (
+                  <div style={{
+                    fontSize: 11.5, lineHeight: 1.6, color: '#c9a86a',
+                    background: 'rgba(255, 180, 60, 0.08)',
+                    border: '1px solid rgba(255, 180, 60, 0.25)',
+                    borderRadius: 8, padding: '10px 12px', marginBottom: 14,
+                  }}>
+                    {t('phone.lan_off_hint')}
+                  </div>
+                )}
+
+                <div style={{
+                  display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 16,
+                  opacity: lanEnabled ? 1 : 0.45,
+                  pointerEvents: lanEnabled ? 'auto' : 'none',
+                }}>
                   <div>
                     <div style={{ fontSize: 11, color: '#97a0b3', marginBottom: 4 }}>
                       {t('phone.lan_url')}
@@ -263,9 +349,10 @@ const PhoneControlButton: React.FC<PhoneControlButtonProps> = ({ showToast }) =>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
                     <button
                       onClick={repairFirewall}
-                      disabled={fwState === 'busy'}
+                      disabled={fwState === 'busy' || !lanEnabled}
                       title={t('phone.firewall_repair_tooltip')}
                       style={{
+                        opacity: lanEnabled ? 1 : 0.4,
                         padding: '6px 10px', fontSize: 11,
                         background:
                           fwState === 'ok' ? 'rgba(77, 210, 138, 0.18)' :
