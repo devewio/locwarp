@@ -406,6 +406,42 @@ build-installer.bat
 
 產物為單一 exe,使用者無需安裝 Python / Node / 任何套件。
 
+### macOS 打包(.dmg,Apple Silicon / arm64,未簽章)
+
+> macOS 支援目前為**未簽章可跑版**:可自行建置與安裝,但因未經 Apple 簽章 /
+> 公證,首次開啟需手動解除隔離(見下方)。日後若取得 Apple Developer 帳號
+> 再補簽章 + 公證。
+
+**先決條件**(裝一次):
+
+- macOS(Apple Silicon)
+- **Xcode Command Line Tools**(提供 `swiftc` 編譯定位 helper):`xcode-select --install`
+- Python 3.x — 先執行一次 `./LocWarp.command` 建立 `backend/.venv`(建置腳本會自動把 `pyinstaller` 裝進該 venv)
+- Node.js 18+:`cd frontend && npm install`
+
+**一鍵建置**:
+
+```bash
+./build-installer.command
+```
+
+依序執行:① 編譯 `locate-mac` 原生定位 helper(`swiftc`)→ ② PyInstaller 編譯
+backend → ③ Vite 建置前端 → ④ electron-builder 產出 `frontend/release/LocWarp-X.Y.Z-arm64.dmg`。
+
+**未簽章版首次開啟**(Gatekeeper 會擋):
+
+- 在 Finder 對 `LocWarp.app` **右鍵 → 開啟**,再按「開啟」;或
+- 終端機執行:`xattr -dr com.apple.quarantine /Applications/LocWarp.app`
+
+**權限與限制**:
+
+- 首次按「定位這台電腦」會跳出系統定位權限對話框,允許後即可取得 Wi-Fi / GPS
+  等級的精準定位(~30–100m);拒絕則退回 IP 定位(~5km)。
+- **連 iOS 17+ 裝置需 root**(建立 RSD tunnel):從終端機 `sudo` 開啟 app,
+  或用 `sudo ./LocWarp.command` 跑 dev 模式。純定位 / Wi-Fi tunnel 多數情況不需 root。
+- **手機操控**預設關閉,需在面板按「啟用」才會開放同網段連線(獨立 port `8778`),
+  按「停用」即關閉。後端本身只綁 `127.0.0.1`,不對外網開放。
+
 ---
 
 ## 使用者端需求

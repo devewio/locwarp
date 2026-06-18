@@ -292,11 +292,13 @@ let mainWindow
 let backendProc = null
 
 function resolveBackendExe() {
-  // In a packaged build, extraResources places files under process.resourcesPath
-  // (e.g.  .../resources/backend/locwarp-backend.exe).  In dev, we don't spawn;
-  // the developer runs `python main.py` manually.
+  // In a packaged build, extraResources places the PyInstaller bundle under
+  // process.resourcesPath/backend/. The executable name is platform-specific
+  // (Windows appends .exe; macOS/Linux don't). In dev we don't spawn — the
+  // developer runs `python main.py` manually.
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'backend', 'locwarp-backend.exe')
+    const exeName = process.platform === 'win32' ? 'locwarp-backend.exe' : 'locwarp-backend'
+    return path.join(process.resourcesPath, 'backend', exeName)
   }
   return null
 }

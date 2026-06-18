@@ -1,14 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for LocWarp backend (Python 3.13).
-# Build: py -3.13 -m PyInstaller backend/locwarp-backend.spec --noconfirm
+# Build (Windows): py -3.13 -m PyInstaller backend/locwarp-backend.spec --noconfirm
+# Build (macOS):   python -m PyInstaller backend/locwarp-backend.spec --noconfirm
+#
+# Cross-platform: Windows-only collections (wintun.dll via pytun_pmd3) are
+# gated on sys.platform so a macOS build doesn't try to bundle a DLL that
+# only ships in the Windows wheel.
+
+import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
+
+IS_WINDOWS = sys.platform.startswith('win')
 
 # pymobiledevice3 has a LOT of dynamic imports — collect everything
 pmd_datas, pmd_binaries, pmd_hiddenimports = collect_all('pymobiledevice3')
 
-# pytun_pmd3 ships wintun.dll as a data file that ctypes loads at runtime
-pytun_datas, pytun_binaries, pytun_hidden = collect_all('pytun_pmd3')
+# pytun_pmd3 ships wintun.dll as a data file that ctypes loads at runtime.
+# That DLL only exists in the Windows wheel; on macOS the WiFi tunnel uses
+# the OS-native utun, so skip this collection entirely off-Windows.
+if IS_WINDOWS:
+    pytun_datas, pytun_binaries, pytun_hidden = collect_all('pytun_pmd3')
+else:
+    pytun_datas, pytun_binaries, pytun_hidden = [], [], []
 
 # developer_disk_image is an indirect dependency of pymobiledevice3 (imported
 # at the top of services/mobile_image_mounter.py). PyInstaller doesn't pick

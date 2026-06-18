@@ -9,7 +9,8 @@
     "build": "tsc && vite build",
     "electron": "electron .",
     "start": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac dmg --arm64"
   },
   "dependencies": {
     "@maplibre/maplibre-gl-leaflet": "^0.1.3",
@@ -63,6 +64,32 @@
       ],
       "requestedExecutionLevel": "requireAdministrator",
       "icon": "build/icon.ico"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "extraResources": [
+        {
+          "from": "native/locate-mac/locate-mac",
+          "to": "locate-mac/locate-mac"
+        }
+      ],
+      "extendInfo": {
+        "NSLocationUsageDescription": "LocWarp 需要定位權限,以便在地圖上定位這台電腦的位置。LocWarp needs your location to place this computer on the map.",
+        "NSLocationWhenInUseUsageDescription": "LocWarp 需要定位權限,以便在地圖上定位這台電腦的位置。LocWarp needs your location to place this computer on the map."
+      }
+    },
+    "dmg": {
+      "title": "LocWarp ${version}"
     },
     "nsis": {
       "oneClick": false,
