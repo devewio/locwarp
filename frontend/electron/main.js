@@ -155,6 +155,55 @@ const tryWindowsLocation = () => {
   })
 }
 
+// Resolve the macOS CoreLocation helper binary. In dev it lives next to
+// its source under frontend/native/locate-mac/; in a packaged build it's
+// bundled via extraResources under Contents/Resources/locate-mac/.
+function resolveMacLocateHelper() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'locate-mac', 'locate-mac')
+  }
+  return path.join(__dirname, '..', 'native', 'locate-mac', 'locate-mac')
+}
+
+// macOS counterpart of tryWindowsLocation(). Spawns the Swift helper,
+// which prints the SAME OK/DENIED/NODATA/ERROR line format, so the parse
+// logic mirrors the Windows path exactly.
+const tryMacLocation = () => {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (payload) => { if (!settled) { settled = true; resolve(payload) } }
+    const helper = resolveMacLocateHelper()
+    if (!fs.existsSync(helper)) {
+      return finish({ ok: false, code: 'NO_HELPER', message: `locate-mac helper not found at ${helper}` })
+    }
+    const child = spawn(helper, [], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    child.stdout.on('data', (d) => { out += d.toString('utf8') })
+    child.stderr.on('data', (d) => console.error('[locate-pc] mac stderr:', d.toString('utf8')))
+    child.on('error', (e) => finish({ ok: false, code: 'SPAWN_FAILED', message: e.message }))
+    child.on('exit', () => {
+      const trimmed = out.trim()
+      if (trimmed.startsWith('OK,')) {
+        const parts = trimmed.split(',')
+        const lat = parseFloat(parts[1])
+        const lng = parseFloat(parts[2])
+        const acc = parseFloat(parts[3])
+        if (Number.isFinite(lat) && Number.isFinite(lng)) {
+          return finish({ ok: true, lat, lng, accuracy: Number.isFinite(acc) ? acc : 100 })
+        }
+      }
+      if (trimmed === 'DENIED') return finish({ ok: false, code: 'DENIED', message: 'macOS Location Services is off or app access denied' })
+      if (trimmed.startsWith('NODATA')) return finish({ ok: false, code: 'NODATA', message: trimmed.slice(0, 200) })
+      if (trimmed.startsWith('ERROR,')) return finish({ ok: false, code: 'ERROR', message: trimmed.slice(6, 200) })
+      finish({ ok: false, code: 'UNKNOWN', message: trimmed.slice(0, 200) || 'no helper output' })
+    })
+    setTimeout(() => {
+      try { child.kill() } catch { /* ignore */ }
+      finish({ ok: false, code: 'TIMEOUT', message: 'locate-mac helper timed out after 18s' })
+    }, 18000)
+  })
+}
+
 ipcMain.handle('get-render-mode', () => {
   // Surface the current saved mode + whether the OS is the one we
   // originally bypassed (Win 10), so the Settings panel can decide
@@ -184,12 +233,12 @@ ipcMain.handle('relaunch-app', () => {
 })
 
 ipcMain.handle('locate-pc', async () => {
-  // The high-accuracy first layer (Windows Location API via PowerShell)
-  // only exists on Windows. On macOS / Linux there's no equivalent wired
-  // up yet, so we skip straight to the IP-geolocation fallback (city-level
-  // ~5km accuracy). The button therefore still works everywhere — it just
-  // returns a coarser fix off-Windows until a native CoreLocation path is
-  // added. See `via` in the result so the UI can label the source.
+  // High-accuracy native first layer, then IP-geolocation fallback:
+  //   * Windows → Windows Location API via PowerShell
+  //   * macOS   → CoreLocation via the bundled Swift helper
+  //   * Linux   → no native path; IP fallback only
+  // The button works everywhere; off the native platforms it just returns
+  // a coarser (~5km) fix. `via` in the result lets the UI label the source.
   if (process.platform === 'win32') {
     const win = await tryWindowsLocation()
     if (win.ok) return { ...win, via: 'windows' }
@@ -209,7 +258,23 @@ ipcMain.handle('locate-pc', async () => {
     }
   }
 
-  // Non-Windows: IP geolocation only.
+  if (process.platform === 'darwin') {
+    const mac = await tryMacLocation()
+    if (mac.ok) return { ...mac, via: 'macos' }
+    // Permission denied is terminal — IP fallback would hide the fact that
+    // the user needs to grant Location access, so surface it directly.
+    if (mac.code === 'DENIED') return mac
+    // NODATA / TIMEOUT / ERROR / NO_HELPER → coarse IP fallback.
+    const ip = await ipFallback()
+    if (ip) return ip
+    return {
+      ok: false,
+      code: 'ALL_FAILED',
+      message: `macOS Location: ${mac.code}${mac.message ? ' (' + mac.message + ')' : ''} | IP fallback: all 3 services unreachable`,
+    }
+  }
+
+  // Linux / other: IP geolocation only.
   const ip = await ipFallback()
   if (ip) return ip
   return {

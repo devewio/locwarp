@@ -3,8 +3,8 @@ export interface LocatePcResult {
   lat?: number
   lng?: number
   accuracy?: number
-  via?: 'windows' | 'ipwho.is' | 'ipapi.co' | 'freeipapi.com'
-  code?: 'DENIED' | 'TIMEOUT' | 'UNKNOWN' | 'ERROR' | 'SPAWN_FAILED' | 'NODATA' | 'ALL_FAILED'
+  via?: 'windows' | 'macos' | 'ipwho.is' | 'ipapi.co' | 'freeipapi.com'
+  code?: 'DENIED' | 'TIMEOUT' | 'UNKNOWN' | 'ERROR' | 'SPAWN_FAILED' | 'NODATA' | 'NO_HELPER' | 'ALL_FAILED'
   message?: string
 }
 

@@ -13,6 +13,10 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
+# ── macOS native helper (compiled binary; source .swift is committed) ──
+frontend/native/locate-mac/locate-mac
+frontend/native/**/*.o
+
 # ── PyInstaller / electron-builder build artifacts ──
 dist-py/
 build-py/

@@ -155,6 +155,9 @@ const StatusBar: React.FC<StatusBarProps> = ({
   const [locatePcBusy, setLocatePcBusy] = useState(false);
   const [locatePcResult, setLocatePcResult] = useState<{ lat: number; lng: number; accuracy: number; via: string } | null>(null);
   const [locatePcError, setLocatePcError] = useState<string | null>(null);
+  // Used to pick platform-specific copy for the "permission denied" hint
+  // (the Settings path differs between Windows and macOS).
+  const isMacPlatform = typeof navigator !== 'undefined' && /Mac/i.test(navigator.userAgent || navigator.platform || '');
 
   const handleLocatePcClick = async () => {
     setLocatePcOpen(true);
@@ -181,7 +184,7 @@ const StatusBar: React.FC<StatusBarProps> = ({
         return;
       }
       if (r.code === 'DENIED') {
-        setLocatePcError(t('status.locate_pc_denied'));
+        setLocatePcError(t(isMacPlatform ? 'status.locate_pc_denied_mac' : 'status.locate_pc_denied'));
         return;
       }
       setLocatePcError(`${r.code ?? 'ERROR'}${r.message ? ': ' + r.message : ''}`);
@@ -741,8 +744,12 @@ const StatusBar: React.FC<StatusBarProps> = ({
                   {t('status.locate_pc_accuracy').replace('{m}', Math.round(locatePcResult.accuracy).toString())}
                 </div>
                 <div style={{ fontSize: 11, opacity: 0.5, marginBottom: 14 }}>
-                  {t(locatePcResult.via === 'windows' ? 'status.locate_pc_source_wifi' : 'status.locate_pc_source_ip')}
-                  {locatePcResult.via !== 'windows' && ` · ${locatePcResult.via}`}
+                  {/* Windows (Location API) and macOS (CoreLocation) are both
+                      Wi-Fi/GPS-precise; only the IP fallback is coarse. */}
+                  {t(locatePcResult.via === 'macos' ? 'status.locate_pc_source_wifi_mac'
+                    : locatePcResult.via === 'windows' ? 'status.locate_pc_source_wifi'
+                    : 'status.locate_pc_source_ip')}
+                  {locatePcResult.via !== 'windows' && locatePcResult.via !== 'macos' && ` · ${locatePcResult.via}`}
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {onLocatePcFly && (
