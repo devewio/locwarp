@@ -356,9 +356,47 @@ ipcMain.handle('set-locate-source', (_e, source) => {
   return { ok: true }
 })
 
-// Strip the default "File Edit View Window Help" menubar — LocWarp has its
-// own in-window controls and the native menu only adds noise on Windows.
-Menu.setApplicationMenu(null)
+// LocWarp has its own in-window controls, so the native menubar mostly adds
+// noise. On Windows we strip it entirely. On macOS, however, the standard
+// Cmd+C/V/X/A clipboard shortcuts are bound to the Edit menu's roles — with
+// no menu those shortcuts stop working in our text inputs (e.g. Cmd+V won't
+// paste). So on macOS we install a minimal menu that keeps the app + Edit
+// menus (Electron's built-in roles wire up the localized clipboard items and
+// their accelerators for us) and drops the rest.
+function installAppMenu() {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null)
+    return
+  }
+  const template = [
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+installAppMenu()
 
 let mainWindow
 let backendProc = null
