@@ -35,7 +35,7 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.locwarp.app",
+    "appId": "tw.com.eddie.locwarp.app",
     "productName": "LocWarp",
     "directories": {
       "output": "release"

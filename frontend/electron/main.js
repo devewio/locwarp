@@ -5,11 +5,30 @@ const http = require('http')
 const os = require('os')
 const fs = require('fs')
 
+// Directory for user preferences. We deliberately DON'T use
+// app.getPath('userData') here: on macOS the app must be launched with
+// sudo to connect iOS 17+ devices (RSD tunnel needs root), and under sudo
+// Electron resolves userData to root's home (/var/root/...), so a setting
+// saved while running elevated would be invisible to a normal double-click
+// launch (and vice-versa). Anchoring prefs to the *real* user's
+// ~/.locwarp keeps a single, consistent settings location across both
+// launch modes (it's also where the backend writes its logs).
+function prefsDir() {
+  // Under sudo, SUDO_USER is the original user; resolve their home rather
+  // than root's. Fall back to os.homedir() when not elevated.
+  const sudoUser = process.env.SUDO_USER
+  let home = os.homedir()
+  if (sudoUser && (home === '/var/root' || home === '/root')) {
+    home = process.platform === 'darwin' ? `/Users/${sudoUser}` : `/home/${sudoUser}`
+  }
+  return path.join(home, '.locwarp')
+}
+
 // Render-mode preference (Issue #24). Win 10 stays on software rendering
 // by default — v0.2.121/125 hit a Chromium 124 GPU-sandbox crash on
 // 22H2 — but users whose hardware works fine can opt in via Settings
 // and restart. Win 11 defaults to hardware acceleration as usual.
-const RENDER_MODE_FILE = path.join(app.getPath('userData'), 'render-mode.json')
+const RENDER_MODE_FILE = path.join(prefsDir(), 'render-mode.json')
 
 function readRenderModePref() {
   try {
@@ -28,6 +47,36 @@ function writeRenderModePref(mode) {
     fs.writeFileSync(RENDER_MODE_FILE, JSON.stringify({ mode }, null, 2), 'utf8')
   } catch (e) {
     console.error('[render-mode] failed to save pref:', e && e.message)
+  }
+}
+
+// Locate-PC source preference. Lets the user choose how "locate this
+// computer" resolves a position:
+//   'auto'   — try the native OS locator first (CoreLocation / Windows
+//              Location), fall back to IP geolocation if it fails. Default.
+//   'native' — native only; surface the denial instead of falling back
+//              (for users with a signed build / who want precise only).
+//   'ip'     — skip the native locator entirely and use IP geolocation.
+//              Avoids the "permission denied" prompt on unsigned macOS
+//              builds where CoreLocation can't be authorized.
+const LOCATE_SOURCE_FILE = path.join(prefsDir(), 'locate-source.json')
+
+function readLocateSourcePref() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(LOCATE_SOURCE_FILE, 'utf8'))
+    if (parsed && ['auto', 'native', 'ip'].includes(parsed.source)) {
+      return parsed.source
+    }
+  } catch { /* missing or corrupt — fall through to default */ }
+  return null
+}
+
+function writeLocateSourcePref(source) {
+  try {
+    fs.mkdirSync(path.dirname(LOCATE_SOURCE_FILE), { recursive: true })
+    fs.writeFileSync(LOCATE_SOURCE_FILE, JSON.stringify({ source }, null, 2), 'utf8')
+  } catch (e) {
+    console.error('[locate-source] failed to save pref:', e && e.message)
   }
 }
 
@@ -233,48 +282,61 @@ ipcMain.handle('relaunch-app', () => {
 })
 
 ipcMain.handle('locate-pc', async () => {
-  // High-accuracy native first layer, then IP-geolocation fallback:
+  // Resolve the user's preferred source. Default 'auto' = native-then-IP.
+  const source = readLocateSourcePref() || 'auto'
+
+  // 'ip' — skip the native locator entirely. Useful on unsigned macOS
+  // builds where CoreLocation can't be authorized (avoids the misleading
+  // "permission denied" prompt) and anywhere the user just wants a quick
+  // coarse fix.
+  if (source === 'ip') {
+    const ip = await ipFallback()
+    if (ip) return ip
+    return { ok: false, code: 'ALL_FAILED', message: 'IP geolocation fallback: all 3 services unreachable' }
+  }
+
+  // 'native' vs 'auto' only differ in whether a native failure falls back
+  // to IP. In 'native' the denial/failure is surfaced as-is.
+  const allowIpFallback = source !== 'native'
+
+  // High-accuracy native first layer:
   //   * Windows → Windows Location API via PowerShell
   //   * macOS   → CoreLocation via the bundled Swift helper
-  //   * Linux   → no native path; IP fallback only
-  // The button works everywhere; off the native platforms it just returns
-  // a coarser (~5km) fix. `via` in the result lets the UI label the source.
+  //   * Linux   → no native path
   if (process.platform === 'win32') {
     const win = await tryWindowsLocation()
     if (win.ok) return { ...win, via: 'windows' }
     if (win.code === 'DENIED') return win
-    // Windows Location returned NODATA / TIMEOUT / ERROR / UNKNOWN. Fall
-    // back to IP geolocation from the main process so the request is
-    // free of any renderer CORS / CSP restrictions.
-    const ip = await ipFallback()
-    if (ip) return ip
-    // Both layers failed — surface the original Windows error so the
-    // dialog can show the user something diagnostic instead of just
-    // "everything failed".
+    if (allowIpFallback) {
+      const ip = await ipFallback()
+      if (ip) return ip
+    }
     return {
       ok: false,
       code: 'ALL_FAILED',
-      message: `Windows Location: ${win.code}${win.message ? ' (' + win.message + ')' : ''} | IP fallback: all 3 services unreachable`,
+      message: `Windows Location: ${win.code}${win.message ? ' (' + win.message + ')' : ''}${allowIpFallback ? ' | IP fallback: all 3 services unreachable' : ''}`,
     }
   }
 
   if (process.platform === 'darwin') {
     const mac = await tryMacLocation()
     if (mac.ok) return { ...mac, via: 'macos' }
-    // Permission denied is terminal — IP fallback would hide the fact that
-    // the user needs to grant Location access, so surface it directly.
+    // Permission denied is terminal regardless of mode — IP fallback would
+    // hide the fact that the user needs to grant Location access.
     if (mac.code === 'DENIED') return mac
-    // NODATA / TIMEOUT / ERROR / NO_HELPER → coarse IP fallback.
-    const ip = await ipFallback()
-    if (ip) return ip
+    if (allowIpFallback) {
+      const ip = await ipFallback()
+      if (ip) return ip
+    }
     return {
       ok: false,
       code: 'ALL_FAILED',
-      message: `macOS Location: ${mac.code}${mac.message ? ' (' + mac.message + ')' : ''} | IP fallback: all 3 services unreachable`,
+      message: `macOS Location: ${mac.code}${mac.message ? ' (' + mac.message + ')' : ''}${allowIpFallback ? ' | IP fallback: all 3 services unreachable' : ''}`,
     }
   }
 
-  // Linux / other: IP geolocation only.
+  // Linux / other: no native path. 'native' mode has nothing to try, so
+  // still use IP (the only option) rather than failing outright.
   const ip = await ipFallback()
   if (ip) return ip
   return {
@@ -282,6 +344,16 @@ ipcMain.handle('locate-pc', async () => {
     code: 'ALL_FAILED',
     message: 'IP geolocation fallback: all 3 services unreachable',
   }
+})
+
+ipcMain.handle('get-locate-source', () => {
+  return { source: readLocateSourcePref() || 'auto' }
+})
+
+ipcMain.handle('set-locate-source', (_e, source) => {
+  if (!['auto', 'native', 'ip'].includes(source)) return { ok: false }
+  writeLocateSourcePref(source)
+  return { ok: true }
 })
 
 // Strip the default "File Edit View Window Help" menubar — LocWarp has its

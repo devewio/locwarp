@@ -155,14 +155,27 @@ const StatusBar: React.FC<StatusBarProps> = ({
   const [locatePcBusy, setLocatePcBusy] = useState(false);
   const [locatePcResult, setLocatePcResult] = useState<{ lat: number; lng: number; accuracy: number; via: string } | null>(null);
   const [locatePcError, setLocatePcError] = useState<string | null>(null);
+  // Locate-source preference: 'auto' | 'native' | 'ip'. Lets users on
+  // unsigned macOS builds skip the (always-denied) CoreLocation path.
+  const [locateSource, setLocateSource] = useState<import('../types/electron').LocateSource>('auto');
   // Used to pick platform-specific copy for the "permission denied" hint
   // (the Settings path differs between Windows and macOS).
   const isMacPlatform = typeof navigator !== 'undefined' && /Mac/i.test(navigator.userAgent || navigator.platform || '');
+
+  const changeLocateSource = async (src: import('../types/electron').LocateSource) => {
+    setLocateSource(src);
+    try { await window.electronAPI?.setLocateSource?.(src); } catch { /* ignore */ }
+  };
 
   const handleLocatePcClick = async () => {
     setLocatePcOpen(true);
     setLocatePcResult(null);
     setLocatePcError(null);
+    // Load the saved source so the toggle renders in the right position.
+    try {
+      const r = await window.electronAPI?.getLocateSource?.();
+      if (r?.source) setLocateSource(r.source);
+    } catch { /* ignore — default 'auto' */ }
     setLocatePcBusy(true);
 
     const api = (typeof window !== 'undefined') ? window.electronAPI : undefined;
@@ -725,6 +738,39 @@ const StatusBar: React.FC<StatusBarProps> = ({
             <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>
               {t('status.locate_pc_dialog_title')}
             </div>
+
+            {/* Location-source selector: auto / native / ip. */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 5 }}>
+                {t('status.locate_pc_mode_label')}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {(['auto', 'native', 'ip'] as const).map((m) => {
+                  const active = locateSource === m;
+                  return (
+                    <button
+                      key={m}
+                      onClick={() => changeLocateSource(m)}
+                      disabled={locatePcBusy}
+                      style={{
+                        flex: 1, padding: '6px 8px', fontSize: 12,
+                        background: active ? 'rgba(244, 143, 177, 0.18)' : 'rgba(255,255,255,0.04)',
+                        border: `1px solid ${active ? 'rgba(244, 143, 177, 0.55)' : 'rgba(255,255,255,0.10)'}`,
+                        color: active ? '#f9b8cb' : '#aeb4c2',
+                        borderRadius: 6, cursor: locatePcBusy ? 'not-allowed' : 'pointer',
+                        fontWeight: active ? 600 : 400,
+                      }}
+                    >
+                      {t(`status.locate_pc_mode_${m}` as Parameters<typeof t>[0])}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 10.5, opacity: 0.5, marginTop: 5, lineHeight: 1.5 }}>
+                {t(`status.locate_pc_mode_${locateSource}_hint` as Parameters<typeof t>[0])}
+              </div>
+            </div>
+
             {locatePcBusy && (
               <div style={{ fontSize: 12, opacity: 0.75, padding: '12px 0' }}>
                 {t('status.locate_pc_busy')}
