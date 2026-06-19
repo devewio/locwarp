@@ -393,6 +393,16 @@ function installAppMenu() {
         { role: 'selectAll' },
       ],
     },
+    {
+      // 介面縮放:沿用 Electron 內建 role,自動綁定 Cmd +/-/0
+      // 並提供本地化選單文字。
+      label: 'View',
+      submenu: [
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+      ],
+    },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
