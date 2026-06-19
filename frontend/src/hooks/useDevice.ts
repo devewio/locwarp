@@ -28,6 +28,16 @@ export interface WifiScanResult {
 
 export type WsSubscribe = (fn: (m: WsMessage) => void) => () => void
 
+// Result of a scan()/"+"-button attempt, so the caller can give user feedback.
+//   connected      — a new device was found and connected
+//   no_new_device  — scan succeeded but every visible device is already connected
+//   connect_failed — a new device was found but connecting to it failed
+//   scan_failed    — the device list call itself failed (usbmuxd unavailable, etc.)
+export interface ScanOutcome {
+  status: 'connected' | 'no_new_device' | 'connect_failed' | 'scan_failed'
+  list: DeviceInfo[]
+}
+
 export function useDevice(subscribe?: WsSubscribe) {
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [connectedDevice, setConnectedDevice] = useState<DeviceInfo | null>(null)
@@ -124,6 +134,43 @@ export function useDevice(subscribe?: WsSubscribe) {
     } catch (err) {
       console.error('Failed to scan devices:', err)
       return []
+    } finally {
+      setScanning(false)
+    }
+  }, [])
+
+  // Connect the next not-yet-connected device. Powers the "+" button: unlike
+  // scan() (which only auto-connects when there is exactly one device and none
+  // connected yet), this deliberately attaches an additional device even when
+  // one is already connected — the dual-device flow. Returns a ScanOutcome so
+  // the caller can surface a toast.
+  const connectNext = useCallback(async (): Promise<ScanOutcome> => {
+    setScanning(true)
+    try {
+      const result = await listDevices()
+      const list: DeviceInfo[] = Array.isArray(result) ? result : []
+      setDevices(list)
+      const active = list.find((d) => d.is_connected) ?? null
+      const pending = list.find((d) => !d.is_connected) ?? null
+      if (!pending) {
+        if (active) setConnectedDevice(active)
+        return { status: 'no_new_device', list }
+      }
+      try {
+        await connectDevice(pending.udid)
+        const refreshed = await listDevices()
+        const rList: DeviceInfo[] = Array.isArray(refreshed) ? refreshed : []
+        setDevices(rList)
+        setConnectedDevice(rList.find((d) => d.udid === pending.udid) ?? pending)
+        return { status: 'connected', list: rList }
+      } catch (err) {
+        console.error('Failed to connect device:', err)
+        if (active) setConnectedDevice(active)
+        return { status: 'connect_failed', list }
+      }
+    } catch (err) {
+      console.error('Failed to scan devices:', err)
+      return { status: 'scan_failed', list: [] }
     } finally {
       setScanning(false)
     }
@@ -482,7 +529,7 @@ export function useDevice(subscribe?: WsSubscribe) {
     devices.find((d) => d.udid === stickyPrimaryUdid && d.is_connected) ?? null
 
   return {
-    devices, connectedDevice, scanning, scan, connect, disconnect,
+    devices, connectedDevice, scanning, scan, connectNext, connect, disconnect,
     connectWifi, scanWifi, wifiScanning, wifiDevices,
     startWifiTunnel, checkTunnelStatus, stopTunnel, tunnelStatus, tunnels,
     connectedDevices, primaryDevice,

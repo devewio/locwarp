@@ -146,6 +146,8 @@ export const STRINGS = {
   // ── Device chip ──────────────────────────────
   'device.add_device': { zh: '掃描 iPhone', en: 'Scan iPhone' },
   'device.max_reached': { zh: '已連接最多 3 台', en: 'Maximum 3 devices connected' },
+  'device.no_new_device': { zh: '找不到可新增的 iPhone,請確認已接上並完成配對', en: 'No new iPhone found — make sure it is plugged in and paired' },
+  'device.add_success': { zh: '已新增裝置', en: 'Device added' },
   'device.chip_disconnect': { zh: '中斷此裝置', en: 'Disconnect this device' },
   'device.chip_restore': { zh: '還原此裝置', en: 'Restore this device' },
   'device.chip_enable_dev': { zh: '啟用開發者模式', en: 'Enable Developer Mode' },

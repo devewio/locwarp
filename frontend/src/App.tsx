@@ -1532,12 +1532,22 @@ const App: React.FC = () => {
         <DeviceChipRow
           devices={device.connectedDevices}
           runtimes={sim.runtimes}
-          onAdd={() => {
-            if (device.connectedDevices.length >= 2) {
+          onAdd={async () => {
+            // Cap matches MAX_DEVICES enforced by the backend and DeviceChipRow (3).
+            if (device.connectedDevices.length >= 3) {
               setToastMsg(t('device.max_reached'))
               return
             }
-            device.scan()
+            const outcome = await device.connectNext()
+            if (outcome.status === 'connected') {
+              setToastMsg(t('device.add_success'))
+            } else if (outcome.status === 'connect_failed') {
+              setToastMsg(t('device.connect_failed'))
+            } else if (outcome.status === 'no_new_device') {
+              setToastMsg(t('device.no_new_device'))
+            } else {
+              setToastMsg(t('device.connect_failed'))
+            }
           }}
           onDisconnect={(udid) => { device.disconnect(udid) }}
           onRestoreOne={async (udid) => {
