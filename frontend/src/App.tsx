@@ -300,6 +300,32 @@ const App: React.FC = () => {
     api.setCooldownEnabled(enabled).catch(() => setCooldownEnabled((v) => !v))
   }, [])
 
+  // ── Idle GPU throttle ──────────────────────────────────────────────
+  // Chromium keeps compositing frames on the GPU as long as any CSS
+  // `infinite` animation is running, even when the window is hidden or
+  // the app is in the background — this was the dominant source of the
+  // "LocWarp Helper (GPU)" pegging the GPU for hours. When the app loses
+  // focus or its window is hidden, flag `<body class="lw-idle">`; CSS then
+  // pauses every infinite animation (animation-play-state: paused), which
+  // lets the compositor go idle. Pausing (vs. removing) means resuming on
+  // refocus is instant with no reflow/repaint cost.
+  useEffect(() => {
+    const apply = () => {
+      const idle = document.hidden || !document.hasFocus()
+      document.body.classList.toggle('lw-idle', idle)
+    }
+    apply()
+    window.addEventListener('focus', apply)
+    window.addEventListener('blur', apply)
+    document.addEventListener('visibilitychange', apply)
+    return () => {
+      window.removeEventListener('focus', apply)
+      window.removeEventListener('blur', apply)
+      document.removeEventListener('visibilitychange', apply)
+      document.body.classList.remove('lw-idle')
+    }
+  }, [])
+
   // Load saved routes + categories on mount
   useEffect(() => {
     api.getSavedRoutes().then(setSavedRoutes).catch(() => {})
